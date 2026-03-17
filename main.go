@@ -8,6 +8,7 @@ import (
 	"personal/autoria/database"
 	"personal/autoria/transform"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
@@ -116,6 +117,10 @@ func main() {
 	for _, id := range ids {
 		info, err := client.GetByID(strconv.FormatInt(id, 10))
 		if err != nil {
+			if strings.Contains(err.Error(), "429") {
+				log.Error("rate limited (429), stopping", zap.Int64("id", id), zap.Error(err))
+				break
+			}
 			log.Error("get by id failed", zap.Int64("id", id), zap.Error(err))
 			continue
 		}
