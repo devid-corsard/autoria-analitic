@@ -13,6 +13,9 @@ import (
 	"github.com/joho/godotenv"
 )
 
+const maxIDs = 1000   // cap so we don't exceed GetByID request limit
+const countpage = 100 // max page size for search API
+
 // Config holds app configuration from .env.
 type Config struct {
 	APIKey     string
@@ -68,20 +71,44 @@ func main() {
 
 	client := autoria.NewClient(cfg.APIKey)
 
+	// Fetch 100 ids per page, save each page to DB, until we've saved maxIDs total.
 	params := autoria.ListParams{
 		CategoryID: autoria.CategoryCars,
 		OrderBy:    autoria.OrderNewest,
+		Countpage:  strconv.Itoa(countpage),
 	}
-	result, err := client.ListCars(params)
+	saved := 0
+	for page := 0; saved < maxIDs; page++ {
+		params.Page = strconv.Itoa(page)
+		result, err := client.ListCars(params)
+		if err != nil {
+			log.Printf("error listing cars: %v", err)
+			break
+		}
+		log.Printf("total results: %v\n", result.Result.SearchResult.Count)
+		pageIDs := []int64(result.Result.SearchResult.IDs)
+		if len(pageIDs) == 0 {
+			break
+		}
+		toSave := pageIDs
+		if left := maxIDs - saved; len(toSave) > left {
+			toSave = toSave[:left]
+		}
+		if err := db.InsertIDs(ctx, toSave); err != nil {
+			log.Fatalf("%v", err)
+		}
+		saved += len(toSave)
+		if len(pageIDs) < countpage || saved >= maxIDs {
+			break
+		}
+	}
+
+	// Fetch all ids from DB with no details yet and get details for each.
+	ids, err := db.GetIDsPendingDetails(ctx)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
-	ids := []int64(result.Result.SearchResult.IDs)
-
-	if err := db.InsertIDs(ctx, ids); err != nil {
-		log.Fatalf("%v", err)
-	}
-
+	log.Printf("total ids to fetch details for: %v", len(ids))
 	for _, id := range ids {
 		info, err := client.GetByID(strconv.FormatInt(id, 10))
 		if err != nil {

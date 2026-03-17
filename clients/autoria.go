@@ -58,7 +58,7 @@ type ListParams struct {
 	OrderBy    OrderBy
 	// Countpage is page size (max 100). Use "100" for maximum.
 	Countpage string
-	// Page is 1-based page number for pagination.
+	// Page is 0-based page number for pagination.
 	Page string
 }
 
@@ -114,6 +114,12 @@ func (c *Client) ListCars(params ListParams) (*SearchResult, error) {
 	}
 	if params.OrderBy != "" {
 		q["order_by"] = string(params.OrderBy)
+	}
+	if params.Countpage != "" {
+		q["countpage"] = string(params.Countpage)
+	}
+	if params.Page != "" {
+		q["page"] = string(params.Page)
 	}
 
 	var out SearchResult

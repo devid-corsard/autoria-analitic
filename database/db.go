@@ -158,3 +158,21 @@ func (db *DB) Get(ctx context.Context, id int64) (*Car, error) {
 	}
 	return &c, nil
 }
+
+// GetIDsPendingDetails returns ids of cars that have no details yet (only id/created_at from InsertIDs).
+func (db *DB) GetIDsPendingDetails(ctx context.Context) ([]int64, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id FROM cars WHERE title = '' ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
