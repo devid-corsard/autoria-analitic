@@ -1,0 +1,36 @@
+# Analytics dashboard for autoria cars table.
+# Requires Postgres from the other stack; use the same Docker network so
+# Metabase and Superset can connect to host "postgres" on port 5432.
+#
+# 1. Ensure the stack that runs Postgres is up.
+# 2. Create frogfort-network if needed: docker network create frogfort-network
+# 3. From this repo: docker compose up -d
+# 4. Superset: http://localhost:8088 (login: admin / admin). Add Postgres in
+#    Data → Databases: host=postgres, port=5432, db, user, password from .env.
+# 5. Metabase: http://localhost:3030 (optional).
+
+services:
+  superset:
+    image: apache/superset:latest-dev
+    container_name: autoria-superset
+    ports:
+      - "8088:8088"
+    volumes:
+      - ./superset_data:/app/superset_home
+    environment:
+      SUPERSET_SECRET_KEY: "autoria-superset-secret-key-change-in-production"
+      SUPERSET_LOAD_EXAMPLES: "no"
+    command: >
+      bash -c "
+        superset db upgrade &&
+        (superset fab create-admin --username admin --firstname Admin --lastname User --email admin@autoria.local --password admin 2>/dev/null || true) &&
+        superset init &&
+        superset run -h 0.0.0.0 -p 8088
+      "
+    networks:
+      - frogfort-network
+    restart: unless-stopped
+
+networks:
+  frogfort-network:
+    external: true

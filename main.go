@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	autoria "personal/autoria/clients"
@@ -55,28 +56,8 @@ func LoadConfig(log *zap.Logger) Config {
 	return cfg
 }
 
-func main() {
-	log, err := zap.NewProduction()
-	if err != nil {
-		panic(err)
-	}
-	defer log.Sync()
-
-	cfg := LoadConfig(log)
-	ctx := context.Background()
-
-	db, err := database.Open(ctx, cfg.DSN())
-	if err != nil {
-		log.Fatal("database open failed", zap.Error(err))
-	}
-	defer db.DB.Close()
-	if err := db.Ping(ctx); err != nil {
-		log.Fatal("database ping failed", zap.Error(err))
-	}
-
-	client := autoria.NewClient(cfg.APIKey)
-
-	// Fetch 100 ids per page, save each page to DB, until we've saved maxIDs total.
+// fetchNewIDs fetches up to maxIDs car IDs from the API and inserts them into the DB.
+func fetchNewIDs(ctx context.Context, log *zap.Logger, client *autoria.Client, db *database.DB) {
 	params := autoria.ListParams{
 		CategoryID: autoria.CategoryCars,
 		OrderBy:    autoria.OrderNewest,
@@ -107,8 +88,10 @@ func main() {
 			break
 		}
 	}
+}
 
-	// Fetch all ids from DB with no details yet and get details for each.
+// fillEmptyDetails fetches details from the API for all DB records that have no details yet and updates them.
+func fillEmptyDetails(ctx context.Context, log *zap.Logger, client *autoria.Client, db *database.DB) {
 	ids, err := db.GetIDsPendingDetails(ctx)
 	if err != nil {
 		log.Fatal("get ids pending details failed", zap.Error(err))
@@ -136,4 +119,35 @@ func main() {
 			continue
 		}
 	}
+}
+
+func main() {
+	fetchNew := flag.Bool("fetch-new", false, "fetch new car IDs from API and save to DB; otherwise only fill details for empty records")
+	flag.Parse()
+
+	log, err := zap.NewProduction()
+	if err != nil {
+		panic(err)
+	}
+	defer log.Sync()
+
+	cfg := LoadConfig(log)
+	ctx := context.Background()
+
+	db, err := database.Open(ctx, cfg.DSN())
+	if err != nil {
+		log.Fatal("database open failed", zap.Error(err))
+	}
+	defer db.DB.Close()
+	if err := db.Ping(ctx); err != nil {
+		log.Fatal("database ping failed", zap.Error(err))
+	}
+
+	client := autoria.NewClient(cfg.APIKey)
+
+	if *fetchNew {
+		fetchNewIDs(ctx, log, client, db)
+	}
+
+	fillEmptyDetails(ctx, log, client, db)
 }
