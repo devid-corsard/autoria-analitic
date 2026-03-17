@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	autoria "personal/autoria/clients"
 	"personal/autoria/database"
@@ -11,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/joho/godotenv"
+	"go.uber.org/zap"
 )
 
 const maxIDs = 1000   // cap so we don't exceed GetByID request limit
@@ -33,9 +33,9 @@ func (c Config) DSN() string {
 }
 
 // LoadConfig loads .env and returns Config. Panics if required vars are missing.
-func LoadConfig() Config {
+func LoadConfig(log *zap.Logger) Config {
 	if err := godotenv.Load(".env"); err != nil {
-		log.Printf("warning: loading .env: %v", err)
+		log.Warn("loading .env failed", zap.Error(err))
 	}
 	cfg := Config{
 		APIKey:     os.Getenv("api_key"),
@@ -55,18 +55,22 @@ func LoadConfig() Config {
 }
 
 func main() {
-	log.SetFlags(log.Lshortfile)
+	log, err := zap.NewProduction()
+	if err != nil {
+		panic(err)
+	}
+	defer log.Sync()
 
-	cfg := LoadConfig()
+	cfg := LoadConfig(log)
 	ctx := context.Background()
 
 	db, err := database.Open(ctx, cfg.DSN())
 	if err != nil {
-		log.Fatalf("%v", err)
+		log.Fatal("database open failed", zap.Error(err))
 	}
 	defer db.DB.Close()
 	if err := db.Ping(ctx); err != nil {
-		log.Fatalf("%v", err)
+		log.Fatal("database ping failed", zap.Error(err))
 	}
 
 	client := autoria.NewClient(cfg.APIKey)
@@ -82,10 +86,10 @@ func main() {
 		params.Page = strconv.Itoa(page)
 		result, err := client.ListCars(params)
 		if err != nil {
-			log.Printf("error listing cars: %v", err)
+			log.Error("list cars failed", zap.Error(err), zap.Int("page", page))
 			break
 		}
-		log.Printf("total results: %v\n", result.Result.SearchResult.Count)
+		log.Info("list cars page", zap.Int("page", page), zap.Int("total_count", result.Result.SearchResult.Count), zap.Int("ids_on_page", len(result.Result.SearchResult.IDs)))
 		pageIDs := []int64(result.Result.SearchResult.IDs)
 		if len(pageIDs) == 0 {
 			break
@@ -95,7 +99,7 @@ func main() {
 			toSave = toSave[:left]
 		}
 		if err := db.InsertIDs(ctx, toSave); err != nil {
-			log.Fatalf("%v", err)
+			log.Fatal("insert ids failed", zap.Error(err))
 		}
 		saved += len(toSave)
 		if len(pageIDs) < countpage || saved >= maxIDs {
@@ -106,13 +110,13 @@ func main() {
 	// Fetch all ids from DB with no details yet and get details for each.
 	ids, err := db.GetIDsPendingDetails(ctx)
 	if err != nil {
-		log.Fatalf("%v", err)
+		log.Fatal("get ids pending details failed", zap.Error(err))
 	}
-	log.Printf("total ids to fetch details for: %v", len(ids))
+	log.Info("fetching details for cars", zap.Int("count", len(ids)))
 	for _, id := range ids {
 		info, err := client.GetByID(strconv.FormatInt(id, 10))
 		if err != nil {
-			log.Printf("%v", err)
+			log.Error("get by id failed", zap.Int64("id", id), zap.Error(err))
 			continue
 		}
 		car := transform.AutoInfoToCar(info)
@@ -123,7 +127,7 @@ func main() {
 			car.ID = id
 		}
 		if err := db.Update(ctx, car); err != nil {
-			log.Printf("%v", err)
+			log.Error("update car failed", zap.Int64("id", id), zap.Error(err))
 			continue
 		}
 	}
