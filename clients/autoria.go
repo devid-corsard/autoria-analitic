@@ -3,19 +3,23 @@ package autoria
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/url"
+	"strconv"
+
+	"github.com/go-resty/resty/v2"
 )
 
-const searchBaseURL = "https://developers.ria.com/auto/search"
+const (
+	searchBaseURL = "https://developers.ria.com/auto/search"
+	infoBaseURL   = "https://developers.ria.com/auto/info"
+)
 
 type Client struct {
 	apiKey string
-	http   *http.Client
+	resty  *resty.Client
 }
 
 func NewClient(apiKey string) *Client {
-	return &Client{apiKey: apiKey, http: &http.Client{}}
+	return &Client{apiKey: apiKey, resty: resty.New()}
 }
 
 // CategoryID is the RIA category for the search.
@@ -52,16 +56,47 @@ const (
 type ListParams struct {
 	CategoryID CategoryID
 	OrderBy    OrderBy
+	// Countpage is page size (max 100). Use "100" for maximum.
+	Countpage string
+	// Page is 1-based page number for pagination.
+	Page string
+}
+
+// idsArray unmarshals ids from the search API (can be string or number).
+type idsArray []int64
+
+func (a *idsArray) UnmarshalJSON(data []byte) error {
+	var raw []interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	out := make([]int64, 0, len(raw))
+	for i, v := range raw {
+		switch x := v.(type) {
+		case string:
+			n, err := strconv.ParseInt(x, 10, 64)
+			if err != nil {
+				return fmt.Errorf("ids[%d]: invalid string %q: %w", i, x, err)
+			}
+			out = append(out, n)
+		case float64:
+			out = append(out, int64(x))
+		default:
+			return fmt.Errorf("ids[%d]: unexpected type %T", i, v)
+		}
+	}
+	*a = out
+	return nil
 }
 
 // SearchResult is the response from the auto search API.
 type SearchResult struct {
 	Result struct {
 		SearchResult struct {
-			IDs   []int64 `json:"ids"`
-			Count int     `json:"count"`
-			LastID int64  `json:"last_id"`
-			QS    struct {
+			IDs    idsArray `json:"ids"`
+			Count  int      `json:"count"`
+			LastID int64    `json:"last_id"`
+			QS     struct {
 				Fields []string `json:"fields"`
 				Size   int      `json:"size"`
 				From   int      `json:"from"`
@@ -73,34 +108,122 @@ type SearchResult struct {
 // ListCars runs the auto search with the given list parameters.
 // api_key is added automatically.
 func (c *Client) ListCars(params ListParams) (*SearchResult, error) {
-	q := make(url.Values)
-	q.Set("api_key", c.apiKey)
-	q.Set("category_id", string(params.CategoryID))
+	q := map[string]string{
+		"api_key":     c.apiKey,
+		"category_id": string(params.CategoryID),
+	}
 	if params.OrderBy != "" {
-		q.Set("order_by", string(params.OrderBy))
+		q["order_by"] = string(params.OrderBy)
 	}
 
-	u, err := url.Parse(searchBaseURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse search url: %w", err)
-	}
-	u.RawQuery = q.Encode()
-
-	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("do request: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("search api: status %s", resp.Status)
-	}
 	var out SearchResult
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+	resp, err := c.resty.R().
+		SetQueryParams(q).
+		SetResult(&out).
+		Get(searchBaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("list cars (GET search): request: %w", err)
+	}
+	if !resp.IsSuccess() {
+		return nil, fmt.Errorf("list cars (GET search): status %s", resp.Status())
+	}
+	return &out, nil
+}
+
+// AutoInfo is the response from the auto/info API (ad details by id).
+// See: https://docs-developers.ria.com/en/used-cars/auto_search_and_info/auto_info
+type AutoInfo struct {
+	AutoID       int64   `json:"autoId,omitempty"`
+	MarkID       int     `json:"markId,omitempty"`
+	ModelID      int     `json:"modelId,omitempty"`
+	MarkName     string  `json:"markName,omitempty"`
+	ModelName    string  `json:"modelName,omitempty"`
+	Title        string  `json:"title,omitempty"`
+	USD          int     `json:"USD,omitempty"`
+	UAH          int     `json:"UAH,omitempty"`
+	EUR          int     `json:"EUR,omitempty"`
+	Prices       []struct {
+		USD string `json:"USD,omitempty"`
+		UAH string `json:"UAH,omitempty"`
+		EUR string `json:"EUR,omitempty"`
+	} `json:"prices,omitempty"`
+	LinkToView   string `json:"linkToView,omitempty"`
+	VIN          string `json:"VIN,omitempty"`
+	AddDate      string `json:"addDate,omitempty"`
+	UpdateDate   string `json:"updateDate,omitempty"`
+	ExpireDate   string `json:"expireDate,omitempty"`
+	LocationCity string `json:"locationCityName,omitempty"`
+	AutoData     struct {
+		AutoID          int64  `json:"autoId,omitempty"`
+		Year            int    `json:"year,omitempty"`
+		Race            string `json:"race,omitempty"`
+		RaceInt         int    `json:"raceInt,omitempty"`
+		Description    string `json:"description,omitempty"`
+		FuelName       string `json:"fuelName,omitempty"`
+		GearboxName    string `json:"gearboxName,omitempty"`
+		CategoryID     int    `json:"categoryId,omitempty"`
+		IsSold         bool   `json:"isSold,omitempty"`
+		MainCurrency   string `json:"mainCurrency,omitempty"`
+		ModificationName string `json:"modificationName,omitempty"`
+		GenerationName  string `json:"generationName,omitempty"`
+		BodyID         int    `json:"bodyId,omitempty"`
+		DriveName      string `json:"driveName,omitempty"`
+	} `json:"autoData,omitempty"`
+	PhotoData struct {
+		All    []int64 `json:"all,omitempty"`
+		Count  int     `json:"count,omitempty"`
+		SeoLinkM string `json:"seoLinkM,omitempty"`
+		SeoLinkB string `json:"seoLinkB,omitempty"`
+		SeoLinkF string `json:"seoLinkF,omitempty"`
+		SeoLinkSX string `json:"seoLinkSX,omitempty"`
+	} `json:"photoData,omitempty"`
+	StateData struct {
+		StateID   int    `json:"stateId,omitempty"`
+		CityID    int    `json:"cityId,omitempty"`
+		Name      string `json:"name,omitempty"`
+		RegionName string `json:"regionName,omitempty"`
+		LinkToCatalog string `json:"linkToCatalog,omitempty"`
+	} `json:"stateData,omitempty"`
+	Dealer struct {
+		ID         int    `json:"id,omitempty"`
+		Name       string `json:"name,omitempty"`
+		Link       string `json:"link,omitempty"`
+		Logo       string `json:"logo,omitempty"`
+		Type       string `json:"type,omitempty"`
+		Verified   bool   `json:"verified,omitempty"`
+		IsReliable bool   `json:"isReliable,omitempty"`
+	} `json:"dealer,omitempty"`
+	TechnicalCondition struct {
+		ID         int    `json:"id,omitempty"`
+		Title     string `json:"title,omitempty"`
+		Annotation string `json:"annotation,omitempty"`
+	} `json:"technicalCondition,omitempty"`
+	Color struct {
+		Name string `json:"name,omitempty"`
+		Eng  string `json:"eng,omitempty"`
+		Hex  string `json:"hex,omitempty"`
+	} `json:"color,omitempty"`
+	ExchangePossible bool `json:"exchangePossible,omitempty"`
+	AuctionPossible  bool `json:"auctionPossible,omitempty"`
+}
+
+// GetByID returns auto info by announcement id.
+// See: https://docs-developers.ria.com/en/used-cars/auto_search_and_info/auto_info
+func (c *Client) GetByID(autoID string) (*AutoInfo, error) {
+	q := map[string]string{
+		"api_key": c.apiKey,
+		"auto_id": autoID,
+	}
+	var out AutoInfo
+	resp, err := c.resty.R().
+		SetQueryParams(q).
+		SetResult(&out).
+		Get(infoBaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("auto info request: %w", err)
+	}
+	if !resp.IsSuccess() {
+		return nil, fmt.Errorf("auto info api: status %s", resp.Status())
 	}
 	return &out, nil
 }
