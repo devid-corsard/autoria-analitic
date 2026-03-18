@@ -111,6 +111,37 @@ func (db *DB) Create(ctx context.Context, car *Car) error {
 	return err
 }
 
+// Upsert inserts a car or updates it when id already exists. On conflict, updates
+// title, year, usd, race_int, link_to_view and sets updated_at = NOW().
+func (db *DB) Upsert(ctx context.Context, car *Car) error {
+	q := `INSERT INTO cars (
+		id, mark_id, model_id, mark_name, model_name, title, usd, uah, eur,
+		link_to_view, vin, add_date, update_date, expire_date, location_city,
+		year, race_int, description, fuel_name, gearbox_name, category_id, is_sold,
+		state_id, city_id, region_name, dealer_id, dealer_name,
+		technical_condition_id, technical_condition_name, color_name,
+		exchange_possible, auction_possible, created_at, updated_at
+	) VALUES (
+		$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
+		$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34
+	) ON CONFLICT (id) DO UPDATE SET
+		title = EXCLUDED.title,
+		year = EXCLUDED.year,
+		usd = EXCLUDED.usd,
+		race_int = EXCLUDED.race_int,
+		link_to_view = EXCLUDED.link_to_view,
+		updated_at = NOW()`
+	_, err := db.ExecContext(ctx, q,
+		car.ID, car.MarkID, car.ModelID, car.MarkName, car.ModelName, car.Title,
+		car.USD, car.UAH, car.EUR, car.LinkToView, car.VIN, car.AddDate, car.UpdateDate, car.ExpireDate, car.LocationCity,
+		car.Year, car.RaceInt, car.Description, car.FuelName, car.GearboxName, car.CategoryID, car.IsSold,
+		car.StateID, car.CityID, car.RegionName, car.DealerID, car.DealerName,
+		car.TechnicalConditionID, car.TechnicalConditionName, car.ColorName,
+		car.ExchangePossible, car.AuctionPossible, car.CreatedAt, car.UpdatedAt,
+	)
+	return err
+}
+
 // Update updates a car by id. Sets updated_at to now.
 func (db *DB) Update(ctx context.Context, car *Car) error {
 	q := `UPDATE cars SET

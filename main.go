@@ -3,126 +3,19 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
-	"os"
+	"math/rand"
+	"personal/autoria/app"
 	autoria "personal/autoria/clients"
+	"personal/autoria/config"
 	"personal/autoria/database"
-	"personal/autoria/transform"
-	"strconv"
-	"strings"
+	"time"
 
-	"github.com/joho/godotenv"
 	"go.uber.org/zap"
 )
 
-const maxIDs = 1000   // cap so we don't exceed GetByID request limit
-const countpage = 100 // max page size for search API
-
-// Config holds app configuration from .env.
-type Config struct {
-	APIKey     string
-	DBHost     string
-	DBPort     string
-	DBUser     string
-	DBPassword string
-	DBName     string
-}
-
-// DSN returns the Postgres connection string.
-func (c Config) DSN() string {
-	return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
-		c.DBUser, c.DBPassword, c.DBHost, c.DBPort, c.DBName)
-}
-
-// LoadConfig loads .env and returns Config. Panics if required vars are missing.
-func LoadConfig(log *zap.Logger) Config {
-	if err := godotenv.Load(".env"); err != nil {
-		log.Warn("loading .env failed", zap.Error(err))
-	}
-	cfg := Config{
-		APIKey:     os.Getenv("api_key"),
-		DBHost:     os.Getenv("DB_HOST"),
-		DBPort:     os.Getenv("DB_PORT"),
-		DBUser:     os.Getenv("DB_USER"),
-		DBPassword: os.Getenv("DB_PASSWORD"),
-		DBName:     os.Getenv("DB_NAME"),
-	}
-	if cfg.APIKey == "" {
-		panic("api_key is required")
-	}
-	if cfg.DBHost == "" || cfg.DBPort == "" || cfg.DBUser == "" || cfg.DBPassword == "" || cfg.DBName == "" {
-		panic("DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME are required")
-	}
-	return cfg
-}
-
-// fetchNewIDs fetches up to maxIDs car IDs from the API and inserts them into the DB.
-func fetchNewIDs(ctx context.Context, log *zap.Logger, client *autoria.Client, db *database.DB) {
-	params := autoria.ListParams{
-		CategoryID: autoria.CategoryCars,
-		OrderBy:    autoria.OrderNewest,
-		Countpage:  strconv.Itoa(countpage),
-	}
-	saved := 0
-	for page := 0; saved < maxIDs; page++ {
-		params.Page = strconv.Itoa(page)
-		result, err := client.ListCars(params)
-		if err != nil {
-			log.Error("list cars failed", zap.Error(err), zap.Int("page", page))
-			break
-		}
-		log.Info("list cars page", zap.Int("page", page), zap.Int("total_count", result.Result.SearchResult.Count), zap.Int("ids_on_page", len(result.Result.SearchResult.IDs)))
-		pageIDs := []int64(result.Result.SearchResult.IDs)
-		if len(pageIDs) == 0 {
-			break
-		}
-		toSave := pageIDs
-		if left := maxIDs - saved; len(toSave) > left {
-			toSave = toSave[:left]
-		}
-		if err := db.InsertIDs(ctx, toSave); err != nil {
-			log.Fatal("insert ids failed", zap.Error(err))
-		}
-		saved += len(toSave)
-		if len(pageIDs) < countpage || saved >= maxIDs {
-			break
-		}
-	}
-}
-
-// fillEmptyDetails fetches details from the API for all DB records that have no details yet and updates them.
-func fillEmptyDetails(ctx context.Context, log *zap.Logger, client *autoria.Client, db *database.DB) {
-	ids, err := db.GetIDsPendingDetails(ctx)
-	if err != nil {
-		log.Fatal("get ids pending details failed", zap.Error(err))
-	}
-	log.Info("fetching details for cars", zap.Int("count", len(ids)))
-	for _, id := range ids {
-		info, err := client.GetByID(strconv.FormatInt(id, 10))
-		if err != nil {
-			if strings.Contains(err.Error(), "429") {
-				log.Error("rate limited (429), stopping", zap.Int64("id", id), zap.Error(err))
-				break
-			}
-			log.Error("get by id failed", zap.Int64("id", id), zap.Error(err))
-			continue
-		}
-		car := transform.AutoInfoToCar(info)
-		if car == nil {
-			continue
-		}
-		if car.ID == 0 {
-			car.ID = id
-		}
-		if err := db.Update(ctx, car); err != nil {
-			log.Error("update car failed", zap.Int64("id", id), zap.Error(err))
-			continue
-		}
-	}
-}
-
 func main() {
 	fetchNew := flag.Bool("fetch-new", false, "fetch new car IDs from API and save to DB; otherwise only fill details for empty records")
+	loadCSV := flag.String("load", "", "load cars from CSV file and exit (e.g. -load ./auto.csv)")
 	flag.Parse()
 
 	log, err := zap.NewProduction()
@@ -131,7 +24,7 @@ func main() {
 	}
 	defer log.Sync()
 
-	cfg := LoadConfig(log)
+	cfg := config.LoadConfig(log)
 	ctx := context.Background()
 
 	db, err := database.Open(ctx, cfg.DSN())
@@ -144,10 +37,26 @@ func main() {
 	}
 
 	client := autoria.NewClient(cfg.APIKey)
+	a := app.New(client, db, log)
 
-	if *fetchNew {
-		fetchNewIDs(ctx, log, client, db)
+	if *loadCSV != "" {
+		if err := a.LoadCSV(ctx, *loadCSV); err != nil {
+			log.Fatal("load csv failed", zap.Error(err))
+		}
+		return
 	}
 
-	fillEmptyDetails(ctx, log, client, db)
+	if *fetchNew {
+		a.FetchNewIDs(ctx)
+	}
+
+	for {
+		if err := a.FillEmptyDetails(ctx); err != nil {
+			timeTOWait := time.Duration(rand.Intn(20)+20) * time.Minute
+			log.Info("waiting before retrying", zap.Float64("minutes", timeTOWait.Minutes()))
+			time.Sleep(timeTOWait)
+			continue
+		}
+		break
+	}
 }

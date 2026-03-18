@@ -23,3 +23,6 @@ superset:
 
 superset-down:
 	docker compose stop superset
+
+run:
+	go run . 2>&1 | jq
