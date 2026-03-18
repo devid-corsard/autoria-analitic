@@ -5,10 +5,10 @@ import (
 	"encoding/csv"
 	"fmt"
 	"os"
-	"regexp"
 	autoria "personal/autoria/clients"
 	"personal/autoria/database"
 	"personal/autoria/transform"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	csvColLink     = 0
-	csvColTitleYear = 4 // common-text 3
-	csvColPriceUSD = 6 // common-text 5
-	csvColMileage  = 8 // common-text 7
+	csvColLink      = 0
+	csvColTitleYear = 4
+	csvColPriceUSD  = 5
+	csvColMileage   = 7
 )
 
 var idFromLinkRE = regexp.MustCompile(`(\d+)\.html`)
@@ -210,14 +210,14 @@ func (a *App) LoadCSV(ctx context.Context, csvPath string) error {
 		raceInt := parseMileage(rec[csvColMileage])
 
 		car := &database.Car{
-			ID:        id,
-			Title:     title,
-			Year:      year,
-			USD:       usd,
-			RaceInt:   raceInt,
+			ID:         id,
+			Title:      title,
+			Year:       year,
+			USD:        usd,
+			RaceInt:    raceInt,
 			LinkToView: strings.TrimSpace(rec[csvColLink]),
-			CreatedAt: now,
-			UpdatedAt: now,
+			CreatedAt:  now,
+			UpdatedAt:  now,
 		}
 
 		if err := a.db.Upsert(ctx, car); err != nil {
